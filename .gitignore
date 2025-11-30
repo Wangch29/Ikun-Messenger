@@ -6,6 +6,7 @@
 *.dylib
 /bin/
 /build/
+ikun
 
 # Test binary
 *.test
