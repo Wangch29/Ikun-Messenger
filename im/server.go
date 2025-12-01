@@ -99,8 +99,8 @@ func (s *IMServer) forwardPrivateMessage(targetNodeAddr string, from string, msg
 	// Find target grpc address from config
 	var targetGrpcAddr string
 	for _, node := range config.Global.Nodes {
-		if node.IMHttpAddr == targetNodeAddr {
-			targetGrpcAddr = node.IMGrpcAddr
+		if node.IMHttpAddr() == targetNodeAddr {
+			targetGrpcAddr = node.IMGrpcAddr()
 			break
 		}
 	}
@@ -154,7 +154,7 @@ func (s *IMServer) handleBroadcastMessage(from string, msg ClientMessage) {
 		if node.ID == s.nodeID {
 			continue
 		}
-		go s.sendBroadcastToPeer(node.IMGrpcAddr, from, msg)
+		go s.sendBroadcastToPeer(node.IMGrpcAddr(), from, msg)
 	}
 }
 

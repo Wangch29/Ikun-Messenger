@@ -6,19 +6,22 @@ id: 0
 # Cluster nodes configuration
 nodes:
   - id: 0
-    raft_addr: "127.0.0.1:25000"
-    kv_addr:   "127.0.0.1:26000"
-    im_http_addr: "127.0.0.1:28080"
-    im_grpc_addr: "127.0.0.1:27000"
+    host: "127.0.0.1"
+    raft_port: 25000
+    kv_port:   26000
+    im_http_port: 8080
+    im_grpc_port: 17000
 
   - id: 1
-    raft_addr: "127.0.0.1:25001"
-    kv_addr:   "127.0.0.1:26001"
-    im_http_addr: "127.0.0.1:28081"
-    im_grpc_addr: "127.0.0.1:27001"
+    host: "127.0.0.1"
+    raft_port: 25001
+    kv_port:   26001
+    im_http_port: 8081
+    im_grpc_port: 17001
 
   - id: 2
-    raft_addr: "127.0.0.1:25002"
-    kv_addr:   "127.0.0.1:26002"
-    im_http_addr: "127.0.0.1:28082"
-    im_grpc_addr: "127.0.0.1:27002"
+    host: "127.0.0.1"
+    raft_port: 25002
+    kv_port:   26002
+    im_http_port: 8082
+    im_grpc_port: 17002

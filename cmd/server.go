@@ -1,9 +1,9 @@
 package cmd
 
 import (
+	"fmt"
 	"log/slog"
 	"net"
-	"strings"
 
 	"github.com/Wangch29/ikun-messenger/api/impb"
 	"github.com/Wangch29/ikun-messenger/config"
@@ -42,8 +42,8 @@ func runServer(cmd *cobra.Command, args []string) {
 	var raftPeers []string
 	var kvPeers []string
 	for _, node := range config.Global.Nodes {
-		raftPeers = append(raftPeers, node.RaftAddr)
-		kvPeers = append(kvPeers, node.KVAddr)
+		raftPeers = append(raftPeers, node.RaftAddr())
+		kvPeers = append(kvPeers, node.KVAddr())
 	}
 
 	myConfig := config.Global.Nodes[serverMe]
@@ -53,12 +53,7 @@ func runServer(cmd *cobra.Command, args []string) {
 
 	// Start Raft Server
 	go func() {
-		_, port, found := strings.Cut(myConfig.RaftAddr, ":")
-		if !found {
-			slog.Error("Invalid raft address", "addr", myConfig.RaftAddr)
-			return
-		}
-		if err := rf.StartServer(":" + port); err != nil {
+		if err := rf.StartServer(fmt.Sprintf(":%d", myConfig.RaftPort)); err != nil {
 			slog.Error("Failed to start raft server", "err", err)
 			return
 		}
@@ -67,12 +62,7 @@ func runServer(cmd *cobra.Command, args []string) {
 	// Start KV Server
 	kv := kvraft.NewKVServer(serverMe, rf, applyCh, 1000)
 	go func() {
-		_, port, found := strings.Cut(myConfig.KVAddr, ":")
-		if !found {
-			slog.Error("Invalid kv address", "addr", myConfig.KVAddr)
-			return
-		}
-		if err := kv.StartKVServer(":" + port); err != nil {
+		if err := kv.StartKVServer(fmt.Sprintf(":%d", myConfig.KVPort)); err != nil {
 			slog.Error("Failed to start kv server", "err", err)
 			return
 		}
@@ -80,20 +70,15 @@ func runServer(cmd *cobra.Command, args []string) {
 
 	// Start IM gRPC Server
 	ck := kvraft.MakeClerk(kvPeers, int64(serverMe))
-	imServer := im.NewIMServer(serverMe, ck, myConfig.IMHttpAddr)
+	imServer := im.NewIMServer(serverMe, ck, myConfig.IMHttpAddr())
 
 	go func() {
-		_, port, found := strings.Cut(myConfig.IMGrpcAddr, ":")
-		if !found {
-			slog.Error("Invalid im grpc address", "addr", myConfig.IMGrpcAddr)
-			return
-		}
-		lis, err := net.Listen("tcp", ":"+port)
+		lis, err := net.Listen("tcp", fmt.Sprintf(":%d", myConfig.IMGrpcPort))
 		if err != nil {
 			slog.Error("Failed to listen", "err", err)
 			return
 		}
-		slog.Info("IM gRPC Server listening", "addr", myConfig.IMGrpcAddr)
+		slog.Info("IM gRPC Server listening", "addr", myConfig.IMGrpcAddr())
 		s := grpc.NewServer()
 		impb.RegisterIMServiceServer(s, imServer)
 		if err := s.Serve(lis); err != nil {
@@ -103,14 +88,14 @@ func runServer(cmd *cobra.Command, args []string) {
 
 	slog.Info("Node started",
 		"id", serverMe,
-		"raft_addr", myConfig.RaftAddr,
-		"kv_addr", myConfig.KVAddr,
-		"im_http", myConfig.IMHttpAddr,
-		"im_grpc", myConfig.IMGrpcAddr,
+		"raft_addr", myConfig.RaftAddr(),
+		"kv_addr", myConfig.KVAddr(),
+		"im_http", myConfig.IMHttpAddr(),
+		"im_grpc", myConfig.IMGrpcAddr(),
 	)
 
 	// Start IM HTTP Server (Blocking)
-	if err := imServer.Start(myConfig.IMHttpAddr); err != nil {
+	if err := imServer.Start(fmt.Sprintf(":%d", myConfig.IMHttpPort)); err != nil {
 		slog.Error("Failed to start im server", "err", err)
 		return
 	}
