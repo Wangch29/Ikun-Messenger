@@ -13,7 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/Wangch29/IkunMessenger/api/raftpb"
+	"github.com/Wangch29/ikun-messenger/api/raftpb"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"

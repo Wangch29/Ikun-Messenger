@@ -5,7 +5,7 @@ import (
 	"log"
 	"time"
 
-	"github.com/Wangch29/IkunMessenger/api/kvpb"
+	"github.com/Wangch29/ikun-messenger/api/kvpb"
 	"github.com/bwmarrin/snowflake"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"

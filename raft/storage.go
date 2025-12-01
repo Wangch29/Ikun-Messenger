@@ -2,8 +2,6 @@ package raft
 
 import "sync"
 
-// Storage 定义了 Raft 需要的持久化接口
-// 暂时用于替代 labrpc 中的 Persister
 type Storage interface {
 	Save(raftState []byte, snapshot []byte)
 	ReadRaftState() []byte

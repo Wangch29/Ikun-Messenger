@@ -7,8 +7,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/Wangch29/IkunMessenger/kvraft"
-	"github.com/Wangch29/IkunMessenger/raft"
+	"github.com/Wangch29/ikun-messenger/kvraft"
+	"github.com/Wangch29/ikun-messenger/raft"
 	"github.com/spf13/cobra"
 )
 
@@ -25,9 +25,9 @@ var raftPeers = []string{
 
 // kv node addresses
 var kvPeers = []string{
-	"127.0.0.1:6000",
-	"127.0.0.1:6001",
-	"127.0.0.1:6002",
+	"127.0.0.1:26000",
+	"127.0.0.1:26001",
+	"127.0.0.1:26002",
 }
 
 var kvraftCmd = &cobra.Command{

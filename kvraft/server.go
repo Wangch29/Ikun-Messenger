@@ -9,8 +9,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Wangch29/IkunMessenger/api/kvpb"
-	"github.com/Wangch29/IkunMessenger/raft"
+	"github.com/Wangch29/ikun-messenger/api/kvpb"
+	"github.com/Wangch29/ikun-messenger/raft"
 	"google.golang.org/grpc"
 )
 

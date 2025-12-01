@@ -1,0 +1,30 @@
+syntax = "proto3";
+
+package impb;
+
+option go_package = "./impb";
+
+service IMService {
+  rpc Forward(ForwardRequest) returns (ForwardReply);
+  rpc Broadcast(BroadcastRequest) returns (BroadcastReply);
+}
+
+message ForwardRequest {
+  string from = 1;
+  string to = 2;
+  string content = 3;
+}
+
+message ForwardReply {
+  bool success = 1;
+  string err = 2;
+}
+
+message BroadcastRequest {
+  string from = 1;
+  string content = 2;
+}
+
+message BroadcastReply {
+  bool success = 1;
+}
