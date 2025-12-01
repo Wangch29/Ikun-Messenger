@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/Wangch29/ikun-messenger/config"
 	"github.com/Wangch29/ikun-messenger/kvraft"
 	"github.com/Wangch29/ikun-messenger/raft"
 	"github.com/spf13/cobra"
@@ -15,20 +16,6 @@ import (
 var (
 	kvraftMe int
 )
-
-// raft node addresses
-var raftPeers = []string{
-	"127.0.0.1:25000",
-	"127.0.0.1:25001",
-	"127.0.0.1:25002",
-}
-
-// kv node addresses
-var kvPeers = []string{
-	"127.0.0.1:26000",
-	"127.0.0.1:26001",
-	"127.0.0.1:26002",
-}
 
 var kvraftCmd = &cobra.Command{
 	Use:   "kvraft",
@@ -43,17 +30,34 @@ func init() {
 }
 
 func runKVRaft(cmd *cobra.Command, args []string) {
-	if kvraftMe < 0 || kvraftMe >= len(raftPeers) {
+	if len(config.Global.Nodes) == 0 {
+		log.Fatalf("No nodes found in config")
+	}
+
+	if kvraftMe < 0 || kvraftMe >= len(config.Global.Nodes) {
 		log.Fatalf("Invalid node ID: %d", kvraftMe)
 	}
+
+	// Construct peer lists from config
+	var raftPeers []string
+	var kvPeers []string
+	for _, node := range config.Global.Nodes {
+		raftPeers = append(raftPeers, node.RaftAddr)
+		kvPeers = append(kvPeers, node.KVAddr)
+	}
+
+	myConfig := config.Global.Nodes[kvraftMe]
 
 	// 1. Start Raft
 	applyCh := make(chan raft.ApplyMsg)
 	rf := raft.Make(raftPeers, kvraftMe, raft.NewMemoryStorage(), applyCh)
 
 	go func() {
-		parts := strings.Split(raftPeers[kvraftMe], ":")
-		if err := rf.StartServer(":" + parts[1]); err != nil {
+		_, port, found := strings.Cut(myConfig.RaftAddr, ":")
+		if !found {
+			log.Fatalf("Invalid raft address format: %s", myConfig.RaftAddr)
+		}
+		if err := rf.StartServer(":" + port); err != nil {
 			log.Fatalf("Raft server failed: %v", err)
 		}
 	}()
@@ -61,13 +65,16 @@ func runKVRaft(cmd *cobra.Command, args []string) {
 	// 2. Start KV Server
 	kv := kvraft.NewKVServer(kvraftMe, rf, applyCh, 1000)
 	go func() {
-		parts := strings.Split(kvPeers[kvraftMe], ":")
-		if err := kv.StartKVServer(":" + parts[1]); err != nil {
+		_, port, found := strings.Cut(myConfig.KVAddr, ":")
+		if !found {
+			log.Fatalf("Invalid kv address format: %s", myConfig.KVAddr)
+		}
+		if err := kv.StartKVServer(":" + port); err != nil {
 			log.Fatalf("KV server failed: %v", err)
 		}
 	}()
 
-	log.Printf("KVRaft Node %d started. Raft: %s, KV: %s", kvraftMe, raftPeers[kvraftMe], kvPeers[kvraftMe])
+	log.Printf("KVRaft Node %d started. Raft: %s, KV: %s", kvraftMe, myConfig.RaftAddr, myConfig.KVAddr)
 
 	// 3. Create Clerk
 	ck := kvraft.MakeClerk(kvPeers, int64(kvraftMe))

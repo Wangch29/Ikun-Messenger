@@ -5,11 +5,10 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
-	"strconv"
-	"strings"
 	"time"
 
 	"github.com/Wangch29/ikun-messenger/api/impb"
+	"github.com/Wangch29/ikun-messenger/config"
 	"github.com/Wangch29/ikun-messenger/kvraft"
 	"github.com/gin-gonic/gin"
 	"google.golang.org/grpc"
@@ -97,16 +96,19 @@ func (s *IMServer) handlePrivateMessage(from string, msg ClientMessage) {
 }
 
 func (s *IMServer) forwardPrivateMessage(targetNodeAddr string, from string, msg ClientMessage) {
-	// Convert to gRPC address.
-	ip, port, found := strings.Cut(targetNodeAddr, ":")
-	if !found {
-		slog.Error("Invalid target address", "addr", targetNodeAddr)
-		return
+	// Find target grpc address from config
+	var targetGrpcAddr string
+	for _, node := range config.Global.Nodes {
+		if node.IMHttpAddr == targetNodeAddr {
+			targetGrpcAddr = node.IMGrpcAddr
+			break
+		}
 	}
 
-	httpPort, _ := strconv.Atoi(port)
-	grpcPort := httpPort + 8920 // TODO simple mapping: 8080 -> 17000
-	targetGrpcAddr := ip + ":" + strconv.Itoa(grpcPort)
+	if targetGrpcAddr == "" {
+		slog.Error("Target grpc address not found", "http_addr", targetNodeAddr)
+		return
+	}
 
 	// Connect to the target node.
 	// TODO: implement connection pooling.
@@ -148,34 +150,20 @@ func (s *IMServer) handleBroadcastMessage(from string, msg ClientMessage) {
 		})
 
 	// Broadcast to other nodes.
-	imPorts := []string{"8080", "8081", "8082"}
-	for i, port := range imPorts { // TODO: use a config file.
-		if i == s.nodeID {
+	for _, node := range config.Global.Nodes {
+		if node.ID == s.nodeID {
 			continue
 		}
-
-		targetGrpcAddr := "127.0.0.1" + ":" + port
-		go s.sendBroadcastToPeer(targetGrpcAddr, from, msg)
+		go s.sendBroadcastToPeer(node.IMGrpcAddr, from, msg)
 	}
 }
 
 func (s *IMServer) sendBroadcastToPeer(targetAddr string, from string, msg ClientMessage) {
-	// Convert to gRPC address.
-	ip, port, found := strings.Cut(targetAddr, ":")
-	if !found {
-		slog.Error("Invalid target address", "addr", targetAddr)
-		return
-	}
-
-	httpPort, _ := strconv.Atoi(port)
-	grpcPort := httpPort + 8920 // TODO simple mapping: 8080 -> 17000
-	targetGrpcAddr := ip + ":" + strconv.Itoa(grpcPort)
-
 	// Connect to the target node.
 	// TODO: implement connection pooling.
-	conn, err := grpc.NewClient(targetGrpcAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	conn, err := grpc.NewClient(targetAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
-		slog.Error("Failed to connect to peer", "addr", targetGrpcAddr, "err", err)
+		slog.Error("Failed to connect to peer", "addr", targetAddr, "err", err)
 		return
 	}
 	defer conn.Close()
@@ -194,7 +182,7 @@ func (s *IMServer) sendBroadcastToPeer(targetAddr string, from string, msg Clien
 	} else if !reply.Success {
 		slog.Error("Broadcast failed", "reason", err)
 	} else {
-		slog.Info("Message broadcasted successfully", "to", targetGrpcAddr)
+		slog.Info("Message broadcasted successfully", "to", targetAddr)
 	}
 }
 

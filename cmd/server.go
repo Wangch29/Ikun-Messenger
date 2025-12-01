@@ -3,10 +3,10 @@ package cmd
 import (
 	"log/slog"
 	"net"
-	"strconv"
 	"strings"
 
 	"github.com/Wangch29/ikun-messenger/api/impb"
+	"github.com/Wangch29/ikun-messenger/config"
 	"github.com/Wangch29/ikun-messenger/im"
 	"github.com/Wangch29/ikun-messenger/kvraft"
 	"github.com/Wangch29/ikun-messenger/raft"
@@ -15,9 +15,6 @@ import (
 )
 
 var serverMe int
-
-// TODO: For local development only.
-var imPorts = []string{"8080", "8081", "8082"}
 
 var serverCmd = &cobra.Command{
 	Use:   "server",
@@ -32,19 +29,33 @@ func init() {
 }
 
 func runServer(cmd *cobra.Command, args []string) {
-	if serverMe < 0 || serverMe >= len(imPorts) {
-		slog.Error("Invalid node ID: %d", serverMe)
+	if len(config.Global.Nodes) == 0 {
+		slog.Error("No nodes found in config")
 		return
 	}
+
+	if serverMe < 0 || serverMe >= len(config.Global.Nodes) {
+		slog.Error("Invalid node ID", "id", serverMe, "total_nodes", len(config.Global.Nodes))
+		return
+	}
+
+	var raftPeers []string
+	var kvPeers []string
+	for _, node := range config.Global.Nodes {
+		raftPeers = append(raftPeers, node.RaftAddr)
+		kvPeers = append(kvPeers, node.KVAddr)
+	}
+
+	myConfig := config.Global.Nodes[serverMe]
 
 	applyCh := make(chan raft.ApplyMsg)
 	rf := raft.Make(raftPeers, serverMe, raft.NewMemoryStorage(), applyCh)
 
-	// Start Raft.
+	// Start Raft Server
 	go func() {
-		_, port, found := strings.Cut(raftPeers[serverMe], ":")
+		_, port, found := strings.Cut(myConfig.RaftAddr, ":")
 		if !found {
-			slog.Error("Invalid address format (missing port)", "addr", raftPeers[serverMe])
+			slog.Error("Invalid raft address", "addr", myConfig.RaftAddr)
 			return
 		}
 		if err := rf.StartServer(":" + port); err != nil {
@@ -53,12 +64,12 @@ func runServer(cmd *cobra.Command, args []string) {
 		}
 	}()
 
-	// Start KV server.
+	// Start KV Server
 	kv := kvraft.NewKVServer(serverMe, rf, applyCh, 1000)
 	go func() {
-		_, port, found := strings.Cut(kvPeers[serverMe], ":")
+		_, port, found := strings.Cut(myConfig.KVAddr, ":")
 		if !found {
-			slog.Error("Invalid address format (missing port)", "addr", kvPeers[serverMe])
+			slog.Error("Invalid kv address", "addr", myConfig.KVAddr)
 			return
 		}
 		if err := kv.StartKVServer(":" + port); err != nil {
@@ -67,21 +78,22 @@ func runServer(cmd *cobra.Command, args []string) {
 		}
 	}()
 
-	// create clerk.
+	// Start IM gRPC Server
 	ck := kvraft.MakeClerk(kvPeers, int64(serverMe))
+	imServer := im.NewIMServer(serverMe, ck, myConfig.IMHttpAddr)
 
-	nodeAddr := "127.0.0.1:" + imPorts[serverMe]
-	imServer := im.NewIMServer(serverMe, ck, nodeAddr)
-
-	// Start IM gRPC server.
-	grpcPort := 17000 + serverMe
 	go func() {
-		lis, err := net.Listen("tcp", ":"+strconv.Itoa(grpcPort))
+		_, port, found := strings.Cut(myConfig.IMGrpcAddr, ":")
+		if !found {
+			slog.Error("Invalid im grpc address", "addr", myConfig.IMGrpcAddr)
+			return
+		}
+		lis, err := net.Listen("tcp", ":"+port)
 		if err != nil {
 			slog.Error("Failed to listen", "err", err)
 			return
 		}
-		slog.Info("IM gRPC Server listening", ":", grpcPort)
+		slog.Info("IM gRPC Server listening", "addr", myConfig.IMGrpcAddr)
 		s := grpc.NewServer()
 		impb.RegisterIMServiceServer(s, imServer)
 		if err := s.Serve(lis); err != nil {
@@ -91,13 +103,14 @@ func runServer(cmd *cobra.Command, args []string) {
 
 	slog.Info("Node started",
 		"id", serverMe,
-		"raft_addr", raftPeers[serverMe],
-		"kv_addr", kvPeers[serverMe],
-		"im_addr", nodeAddr,
+		"raft_addr", myConfig.RaftAddr,
+		"kv_addr", myConfig.KVAddr,
+		"im_http", myConfig.IMHttpAddr,
+		"im_grpc", myConfig.IMGrpcAddr,
 	)
 
-	// start IM server.
-	if err := imServer.Start(nodeAddr); err != nil {
+	// Start IM HTTP Server (Blocking)
+	if err := imServer.Start(myConfig.IMHttpAddr); err != nil {
 		slog.Error("Failed to start im server", "err", err)
 		return
 	}
