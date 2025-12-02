@@ -74,6 +74,8 @@ func NewKVServer(me int, rf *raft.Raft, applyCh chan raft.ApplyMsg, maxraftstate
 		lastApplied:  make(map[int64]int64),
 	}
 
+	kv.readSnapshot(kv.rf.ReadSnapshot())
+
 	go kv.applier()
 
 	return kv
@@ -215,6 +217,16 @@ func (kv *KVServer) applier() {
 				}
 				delete(kv.waitCh, msg.CommandIndex)
 			}
+
+			if kv.maxraftstate != -1 && kv.rf.RaftStateSize() > kv.maxraftstate {
+				snapshot := kv.encodeSnapshot()
+				kv.rf.Snapshot(msg.CommandIndex, snapshot)
+			}
+
+			kv.mu.Unlock()
+		} else if msg.SnapshotValid {
+			kv.mu.Lock()
+			kv.readSnapshot(msg.Snapshot)
 			kv.mu.Unlock()
 		}
 	}
@@ -237,4 +249,28 @@ func decodeOp(data []byte) (Op, error) {
 	var op Op
 	err := d.Decode(&op)
 	return op, err
+}
+
+func (kv *KVServer) encodeSnapshot() []byte {
+	w := new(bytes.Buffer)
+	e := gob.NewEncoder(w)
+	e.Encode(kv.db)
+	e.Encode(kv.lastApplied)
+	return w.Bytes()
+}
+
+func (kv *KVServer) readSnapshot(data []byte) {
+	if len(data) == 0 {
+		return
+	}
+	r := bytes.NewBuffer(data)
+	d := gob.NewDecoder(r)
+	var db map[string]string
+	var lastApplied map[int64]int64
+	if d.Decode(&db) != nil || d.Decode(&lastApplied) != nil {
+		log.Printf("Error decoding snapshot")
+	} else {
+		kv.db = db
+		kv.lastApplied = lastApplied
+	}
 }

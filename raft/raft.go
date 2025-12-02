@@ -89,6 +89,14 @@ func (rf *Raft) GetState() (int, bool) {
 	return rf.currentTerm, rf.state == Leader
 }
 
+func (rf *Raft) RaftStateSize() int {
+	return rf.persister.RaftStateSize()
+}
+
+func (rf *Raft) ReadSnapshot() []byte {
+	return rf.persister.ReadSnapshot()
+}
+
 func (rf *Raft) persist() {
 	rf.persistSnapshot(rf.persister.ReadSnapshot())
 }
@@ -151,6 +159,27 @@ func (rf *Raft) Start(command []byte) (int, int, bool) {
 	rf.updateCommitIndex()
 
 	return index, term, true
+}
+
+func (rf *Raft) Snapshot(index int, snapshot []byte) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	if index <= rf.lastIncludedIndex {
+		return
+	}
+
+	offset := index - rf.lastIncludedIndex
+	if offset < len(rf.log) {
+		rf.lastIncludedTerm = rf.log[offset].Term
+		rf.log = rf.log[offset:]
+		rf.log[0].Command = nil
+	} else {
+		rf.log = []LogEntry{{Term: rf.lastIncludedTerm, Command: nil}}
+	}
+
+	rf.lastIncludedIndex = index
+	rf.persistSnapshot(snapshot)
 }
 
 // --- RPC Handlers ---
@@ -245,15 +274,50 @@ func (rf *Raft) AppendEntries(ctx context.Context, args *raftpb.AppendEntriesArg
 
 func (rf *Raft) InstallSnapshot(ctx context.Context, args *raftpb.InstallSnapshotArgs) (*raftpb.InstallSnapshotReply, error) {
 	rf.mu.Lock()
-	// Snapshot logic to be implemented if needed
-	// TODO: IMPLEMENT THIS
-	// For now just reject or handle minimally
-	reply := &raftpb.InstallSnapshotReply{Term: int64(rf.currentTerm)}
+	reply := &raftpb.InstallSnapshotReply{}
+
+	if int(args.Term) < rf.currentTerm {
+		reply.Term = int64(rf.currentTerm)
+		rf.mu.Unlock()
+		return reply, nil
+	}
+
+	if int(args.Term) > rf.currentTerm {
+		rf.becomeFollower(int(args.Term))
+	}
+	reply.Term = int64(rf.currentTerm)
+	rf.received = true
+
+	if int(args.LastIncludedIndex) <= rf.lastIncludedIndex {
+		rf.mu.Unlock()
+		return reply, nil
+	}
+
+	rf.lastIncludedIndex = int(args.LastIncludedIndex)
+	rf.lastIncludedTerm = int(args.LastIncludedTerm)
+
+	rf.log = []LogEntry{{Term: int(args.LastIncludedTerm), Command: nil}}
+
+	if rf.lastIncludedIndex > rf.commitIndex {
+		rf.commitIndex = rf.lastIncludedIndex
+	}
+	if rf.lastIncludedIndex > rf.lastApplied {
+		rf.lastApplied = rf.lastIncludedIndex
+	}
+
+	rf.persistSnapshot(args.Data)
+
+	msg := ApplyMsg{
+		SnapshotValid: true,
+		Snapshot:      args.Data,
+		SnapshotTerm:  int(args.LastIncludedTerm),
+		SnapshotIndex: int(args.LastIncludedIndex),
+	}
 	rf.mu.Unlock()
+
+	rf.applyChan <- msg
 	return reply, nil
 }
-
-// --- Internal Helpers ---
 
 func (rf *Raft) becomeFollower(term int) {
 	rf.state = Follower
@@ -414,8 +478,42 @@ func (rf *Raft) broadcastHeartbeats() {
 			}
 
 			nextIdx := rf.nextIndex[server]
-			// Simplify: assume no snapshot for now
-			// TODO: IMPLEMENT THIS
+
+			if nextIdx <= rf.lastIncludedIndex {
+				args := &raftpb.InstallSnapshotArgs{
+					Term:              int64(rf.currentTerm),
+					LeaderId:          int64(rf.me),
+					LastIncludedIndex: int64(rf.lastIncludedIndex),
+					LastIncludedTerm:  int64(rf.lastIncludedTerm),
+					Data:              rf.persister.ReadSnapshot(),
+				}
+				rf.mu.Unlock()
+
+				ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+				reply, err := rf.peers[server].InstallSnapshot(ctx, args)
+				cancel()
+				if err != nil {
+					return
+				}
+
+				rf.mu.Lock()
+				if reply.Term > int64(rf.currentTerm) {
+					rf.becomeFollower(int(reply.Term))
+					rf.mu.Unlock()
+					return
+				}
+				if rf.state != Leader || int(args.Term) != rf.currentTerm {
+					rf.mu.Unlock()
+					return
+				}
+				if int(args.LastIncludedIndex) > rf.matchIndex[server] {
+					rf.matchIndex[server] = int(args.LastIncludedIndex)
+					rf.nextIndex[server] = rf.matchIndex[server] + 1
+					rf.updateCommitIndex()
+				}
+				rf.mu.Unlock()
+				return
+			}
 
 			entries := make([]*raftpb.LogEntry, 0)
 			if nextIdx <= rf.getLastLogIndex() {
@@ -535,8 +633,6 @@ func (rf *Raft) applier() {
 	}
 }
 
-// --- Factory ---
-
 func Make(peersAddr []string, me int, persister Storage, applyCh chan ApplyMsg) *Raft {
 	rf := &Raft{}
 	rf.peers = make([]raftpb.RaftServiceClient, len(peersAddr))
@@ -584,7 +680,7 @@ func (rf *Raft) killed() bool {
 	return atomic.LoadInt32(&rf.dead) == 1
 }
 
-// ====== gRPC Server, only for testing ======
+// only for testing
 
 func (rf *Raft) StartServer(port string) error {
 	lis, err := net.Listen("tcp", port)

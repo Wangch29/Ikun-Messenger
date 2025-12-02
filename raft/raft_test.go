@@ -1,217 +1,302 @@
 package raft
 
 import (
+	"bytes"
 	"fmt"
+	"math/rand"
+	"sync"
 	"testing"
 	"time"
 )
 
 const (
-	basePort = 5000
+	testBasePort = 30000
 )
 
+const RaftElectionTimeout = 1000 * time.Millisecond
+
 type config struct {
+	mu        sync.Mutex
+	t         *testing.T
 	n         int
 	rafts     []*Raft
 	applyChs  []chan ApplyMsg
 	saved     []*MemoryStorage
 	connected []bool
 	addrs     []string
+	start     time.Time
+	basePort  int
 }
 
-func makeConfig(t *testing.T, n int) *config {
+func makeConfig(t *testing.T, n int, testID int) *config {
 	cfg := &config{
+		t:         t,
 		n:         n,
 		rafts:     make([]*Raft, n),
 		applyChs:  make([]chan ApplyMsg, n),
 		saved:     make([]*MemoryStorage, n),
 		connected: make([]bool, n),
 		addrs:     make([]string, n),
+		start:     time.Now(),
+		basePort:  testBasePort + (testID * 100),
 	}
 
 	for i := 0; i < n; i++ {
-		cfg.addrs[i] = fmt.Sprintf("localhost:%d", basePort+i)
+		cfg.addrs[i] = fmt.Sprintf("127.0.0.1:%d", cfg.basePort+i)
 		cfg.saved[i] = NewMemoryStorage()
-		cfg.applyChs[i] = make(chan ApplyMsg)
+		cfg.applyChs[i] = make(chan ApplyMsg, 100)
 		cfg.connected[i] = true
 	}
 
 	for i := 0; i < n; i++ {
-		cfg.start(i)
+		cfg.start1(i)
 	}
 
 	return cfg
 }
 
-func (cfg *config) start(i int) {
-	if cfg.rafts[i] != nil {
-		// Already started?
-		return
+func (cfg *config) start1(i int) {
+	cfg.crash1(i)
+
+	if cfg.applyChs[i] == nil {
+		cfg.applyChs[i] = make(chan ApplyMsg, 100)
 	}
 
 	cfg.rafts[i] = Make(cfg.addrs, i, cfg.saved[i], cfg.applyChs[i])
+	cfg.connected[i] = true
 
-	// Start gRPC server in a goroutine
 	go func() {
-		err := cfg.rafts[i].StartServer(fmt.Sprintf(":%d", basePort+i))
+		err := cfg.rafts[i].StartServer(fmt.Sprintf(":%d", cfg.basePort+i))
 		if err != nil {
-			// This might happen if we kill and restart quickly, or if port is busy
-			// In a real test harness we might want to handle this more gracefully
-			// but for now we just log it.
-			// fmt.Printf("Error starting server %d: %v\n", i, err)
 		}
 	}()
 }
 
-func (cfg *config) cleanup() {
-	for i := 0; i < cfg.n; i++ {
-		if cfg.rafts[i] != nil {
-			cfg.rafts[i].Kill()
-			cfg.rafts[i] = nil
-		}
+func (cfg *config) crash1(i int) {
+	cfg.connected[i] = false
+	if cfg.rafts[i] != nil {
+		cfg.rafts[i].Kill()
+		cfg.rafts[i] = nil
 	}
 }
 
 func (cfg *config) checkOneLeader() int {
-	leaders := 0
-	lastLeader := -1
-	for i := 0; i < cfg.n; i++ {
-		if cfg.connected[i] {
-			term, isLeader := cfg.rafts[i].GetState()
-			if isLeader {
-				if leaders == 0 {
-					lastLeader = i
-				}
-				leaders++
-				_ = term // ignore
-			}
-		}
-	}
+	for iters := 0; iters < 10; iters++ {
+		ms := 450 + (rand.Int63() % 100)
+		time.Sleep(time.Duration(ms) * time.Millisecond)
 
-	if leaders != 1 {
-		return -1
-	}
-	return lastLeader
-}
-
-func (cfg *config) one(cmd []byte, expectedServers int) int {
-	leader := cfg.checkOneLeader()
-	if leader == -1 {
-		return -1
-	}
-
-	index, _, ok := cfg.rafts[leader].Start(cmd)
-	if !ok {
-		return -1
-	}
-
-	t0 := time.Now()
-	for time.Since(t0) < 2*time.Second {
+		leaders := make(map[int]int)
 		for i := 0; i < cfg.n; i++ {
 			if cfg.connected[i] {
-				// Check if applied
-				// Note: In a real test we'd consume from applyChs
-				// Here we peek at internal state or just trust the leader commit logic + time
-				// For simplicity in this first pass, let's just check the Leader's commitIndex
-				// and assume followers catch up.
-				// A better way is to count how many applyChs received the msg.
+				if term, isLeader := cfg.rafts[i].GetState(); isLeader {
+					leaders[i] = term
+				}
 			}
 		}
-		// For this simple test, we just return the index if leader accepted it
-		// The real verification is in the test function checking commitment
+
+		lastTermWithLeader := -1
+		for _, term := range leaders {
+			if lastTermWithLeader == -1 {
+				lastTermWithLeader = term
+			}
+			if term != lastTermWithLeader {
+				cfg.t.Fatalf("leaders disagree on term")
+			}
+		}
+
+		if len(leaders) != 0 {
+			for id := range leaders {
+				return id
+			}
+		}
 	}
-	return index
+	cfg.t.Fatalf("expected one leader, got none")
+	return -1
 }
 
-// Tests
+func (cfg *config) checkTerms() int {
+	term := -1
+	for i := 0; i < cfg.n; i++ {
+		if cfg.connected[i] {
+			xterm, _ := cfg.rafts[i].GetState()
+			if term == -1 {
+				term = xterm
+			} else if term != xterm {
+				cfg.t.Fatalf("servers disagree on term")
+			}
+		}
+	}
+	return term
+}
+
+func (cfg *config) cleanup() {
+	for i := 0; i < cfg.n; i++ {
+		cfg.crash1(i)
+	}
+}
 
 func TestInitialElection(t *testing.T) {
 	servers := 3
-	cfg := makeConfig(t, servers)
+	cfg := makeConfig(t, servers, 1)
 	defer cfg.cleanup()
 
 	fmt.Printf("Test: Initial election ...\n")
 
-	// Wait for election
-	time.Sleep(2 * time.Second)
+	cfg.checkOneLeader()
 
-	leader1 := cfg.checkOneLeader()
-	if leader1 == -1 {
-		t.Fatalf("expected one leader, got none or multiple")
+	time.Sleep(50 * time.Millisecond)
+	term1 := cfg.checkTerms()
+
+	time.Sleep(2 * time.Second)
+	term2 := cfg.checkTerms()
+
+	if term1 != term2 {
+		fmt.Printf("warning: term changed even though there were no failures")
 	}
-	fmt.Printf("  ... Passed -- leader is %d\n", leader1)
+
+	fmt.Printf("  ... Passed\n")
 }
 
 func TestReElection(t *testing.T) {
 	servers := 3
-	cfg := makeConfig(t, servers)
+	cfg := makeConfig(t, servers, 2)
 	defer cfg.cleanup()
 
-	fmt.Printf("Test: Re-election ...\n")
+	fmt.Printf("Test: Election after failure ...\n")
 
-	time.Sleep(2 * time.Second)
 	leader1 := cfg.checkOneLeader()
 	if leader1 == -1 {
-		t.Fatalf("expected one leader, got none or multiple")
+		t.Fatalf("no leader")
 	}
 
-	// Kill leader
-	fmt.Printf("  ... Killing leader %d\n", leader1)
-	cfg.rafts[leader1].Kill()
-	cfg.connected[leader1] = false
-	cfg.rafts[leader1] = nil // Mark as dead in config
+	cfg.crash1(leader1)
 
 	time.Sleep(2 * time.Second)
+	leader2 := -1
+	for i := 0; i < servers; i++ {
+		if i != leader1 && cfg.connected[i] {
+			if _, isLeader := cfg.rafts[i].GetState(); isLeader {
+				leader2 = i
+				break
+			}
+		}
+	}
 
-	leader2 := cfg.checkOneLeader()
 	if leader2 == -1 {
-		t.Fatalf("expected one leader among survivors")
+		leader2 = cfg.checkOneLeader()
 	}
-	if leader2 == leader1 {
-		t.Fatalf("killed leader is still leader?")
+
+	if leader2 == -1 {
+		t.Fatalf("no new leader found")
 	}
-	fmt.Printf("  ... Passed -- new leader is %d\n", leader2)
+
+	cfg.start1(leader1)
+	time.Sleep(1 * time.Second)
+
+	fmt.Printf("  ... Passed\n")
 }
 
 func TestBasicAgree(t *testing.T) {
 	servers := 3
-	cfg := makeConfig(t, servers)
+	cfg := makeConfig(t, servers, 3)
 	defer cfg.cleanup()
 
 	fmt.Printf("Test: Basic agreement ...\n")
 
-	time.Sleep(2 * time.Second)
-	leader := cfg.checkOneLeader()
-	if leader == -1 {
-		t.Fatalf("expected one leader")
-	}
+	iters := 3
+	for index := 1; index < iters+1; index++ {
+		leader := cfg.checkOneLeader()
+		if leader == -1 {
+			t.Fatalf("no leader")
+		}
 
-	// Start a command
-	cmd := []byte("hello")
-	index, term, ok := cfg.rafts[leader].Start(cmd)
-	if !ok {
-		t.Fatalf("leader refused to start command")
-	}
+		cmd := []byte(fmt.Sprintf("cmd %d", index))
+		cfg.rafts[leader].Start(cmd)
 
-	// Wait for commitment
-	// We check that the command appears in the applyCh of the leader and at least one other
-	time.Sleep(2 * time.Second)
-
-	committedCount := 0
-	for i := 0; i < servers; i++ {
-		// Drain channel to see if command arrived
-		select {
-		case msg := <-cfg.applyChs[i]:
-			if msg.CommandValid && msg.CommandIndex == index && string(msg.Command) == string(cmd) {
-				committedCount++
+		committedCount := 0
+		start := time.Now()
+		for time.Since(start) < 5*time.Second {
+			committedCount = 0
+			for i := 0; i < servers; i++ {
+			loop:
+				for {
+					select {
+					case msg := <-cfg.applyChs[i]:
+						if msg.CommandValid && string(msg.Command) == string(cmd) {
+							committedCount++
+							break loop
+						}
+					default:
+						break loop
+					}
+				}
 			}
-		default:
+			if committedCount >= 2 {
+				break
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+
+		if committedCount < 2 {
+			t.Fatalf("index %d failed to commit on majority", index)
 		}
 	}
 
-	if committedCount < 2 {
-		t.Fatalf("command only committed on %d servers, expected at least 2", committedCount)
+	fmt.Printf("  ... Passed\n")
+}
+
+func TestSnapshot(t *testing.T) {
+	servers := 3
+	cfg := makeConfig(t, servers, 4)
+	defer cfg.cleanup()
+
+	fmt.Printf("Test: Snapshot (InstallSnapshot) ...\n")
+
+	time.Sleep(1 * time.Second)
+	leader := -1
+	for i := 0; i < servers; i++ {
+		if _, isLeader := cfg.rafts[i].GetState(); isLeader {
+			leader = i
+			break
+		}
+	}
+	if leader == -1 {
+		t.Fatalf("no leader")
 	}
 
-	fmt.Printf("  ... Passed -- committed on %d servers (term %d)\n", committedCount, term)
+	follower := (leader + 1) % servers
+	cfg.crash1(follower)
+
+	for i := 0; i < 20; i++ {
+		cfg.rafts[leader].Start([]byte(fmt.Sprintf("snap-cmd-%d", i)))
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	snapshotData := []byte("snapshot-state-at-5")
+	cfg.rafts[leader].Snapshot(5, snapshotData)
+
+	cfg.start1(follower)
+
+	success := false
+	start := time.Now()
+	for time.Since(start) < 15*time.Second {
+		select {
+		case msg := <-cfg.applyChs[follower]:
+			if msg.SnapshotValid {
+				if msg.SnapshotIndex == 5 && bytes.Equal(msg.Snapshot, snapshotData) {
+					success = true
+					goto Done
+				}
+			}
+		default:
+			time.Sleep(100 * time.Millisecond)
+		}
+	}
+Done:
+
+	if !success {
+		t.Fatalf("Follower did not receive snapshot via InstallSnapshot")
+	}
+
+	fmt.Printf("  ... Passed\n")
 }

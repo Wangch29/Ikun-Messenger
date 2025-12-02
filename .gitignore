@@ -7,6 +7,8 @@
 /bin/
 /build/
 ikun
+assets/
+tui.log
 
 # Test binary
 *.test
