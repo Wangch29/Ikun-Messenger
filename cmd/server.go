@@ -60,7 +60,7 @@ func runServer(cmd *cobra.Command, args []string) {
 	}()
 
 	// Start KV Server
-	kv := kvraft.NewKVServer(serverMe, rf, applyCh, 1000)
+	kv := kvraft.NewKVServer(serverMe, rf, applyCh, -1)
 	go func() {
 		if err := kv.StartKVServer(fmt.Sprintf(":%d", myConfig.KVPort)); err != nil {
 			slog.Error("Failed to start kv server", "err", err)

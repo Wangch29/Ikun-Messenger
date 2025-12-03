@@ -115,8 +115,10 @@ func (g *Gateway) addConn(userID string, conn *websocket.Conn) {
 	g.conns[userID] = conn
 
 	// Trigger the on connect callback.
+	// Execute synchronously to ensure Put completes before returning.
+	// This ensures the routing table is updated before the connection is considered "ready".
 	if g.OnConnect != nil {
-		go g.OnConnect(userID)
+		g.OnConnect(userID)
 	}
 
 	slog.Info("User connected", "user_id", userID)

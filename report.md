@@ -308,7 +308,49 @@ Run tui and use the name "cxk"
 ./ikun tui
 ```
 
-Send a private messages to "ikun":
+Send a private messages to "ikun" and "kobe",
+
+And both of them can receive "cxk" message! (Remember to switch to cxk's session in the left sidebar when you check messages.)
+
+![](./assets/20.png)
+![](./assets/22.png)
+
+Explain:
+
+Clients "ikun" and "kobe" are connected to **Node 1**, while "cxk" is connected to **Node 0**.
+
+![](./assets/23.png)
+
+When **Node 0** restarts and rejoins the cluster, it automatically fetches logs from peers to rebuild its router table. As a result, Node 0 correctly identifies that "ikun" and "kobe" are on **Node 1** and successfully forwards private messages to them.
+
+![](./assets/25.png)
+
+This demonstrates Raft's consistency in action.
+
+
+#### Network change
+
+Raft maintains strong consistency, ensuring that for every user in the router table, there is exactly one specific node.
+
+Press "ctrl+c" to exit the the third client "cxk" and login again, use the name of "ikun" to simulated node changing. 
+
+```sh
+./ikun tui # Then input the name "ikun"
+```
+
+Initially, "ikun" was connected to **Node 1**, but then re-connected to **Node 0**.
+
+![](./assets/26.png)
+
+Switch back to client "kobe"(the second window), and send some private message to ikun. 
+
+When client "kobe" sends a message to "ikun", the message appears only in the new session (the third window). The old "ikun" session receives nothing.
+
+
+![](./assets/27.png)
+
+
+This demonstrates that the re-login event successfully updated the global router table via Raft, atomically changing the mapping for "ikun" from **Node 1** to **Node 0**. This verifies the **strong consistency** of the Raft implementation.
 
 
 

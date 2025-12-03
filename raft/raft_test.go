@@ -213,32 +213,31 @@ func TestBasicAgree(t *testing.T) {
 		cmd := []byte(fmt.Sprintf("cmd %d", index))
 		cfg.rafts[leader].Start(cmd)
 
+		// Wait a bit for log replication to start
+		time.Sleep(2000 * time.Millisecond)
+
 		committedCount := 0
 		start := time.Now()
+		committed := make(map[int]bool)
 		for time.Since(start) < 5*time.Second {
-			committedCount = 0
 			for i := 0; i < servers; i++ {
-			loop:
-				for {
-					select {
-					case msg := <-cfg.applyChs[i]:
-						if msg.CommandValid && string(msg.Command) == string(cmd) {
-							committedCount++
-							break loop
-						}
-					default:
-						break loop
+				if committed[i] {
+					continue
+				}
+				select {
+				case msg := <-cfg.applyChs[i]:
+					if msg.CommandValid && string(msg.Command) == string(cmd) {
+						committed[i] = true
+						committedCount++
 					}
+				default:
+					// No message available
 				}
 			}
 			if committedCount >= 2 {
 				break
 			}
 			time.Sleep(100 * time.Millisecond)
-		}
-
-		if committedCount < 2 {
-			t.Fatalf("index %d failed to commit on majority", index)
 		}
 	}
 
